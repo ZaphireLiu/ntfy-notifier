@@ -15,6 +15,7 @@ token    = "tk_xxxxxxxxxxxxxxxx"
 # password = ""
 # tls_ca   = "ca.pem"
 # mode     = "stream"          # stream | poll
+# poll_interval = "30s"        # 仅 poll 模式
 # proxy    = "none"
 # initial_since = ""           # 首次启动不回放历史
 
@@ -23,6 +24,7 @@ max_per_min     = 10
 quiet_hours     = ""           # 例如 "23:30-08:00"
 quiet_action    = "silent"     # silent | drop
 long_body_limit = 300
+max_message_age = "5m"         # 断线补发的旧消息不弹通知；0 = 不过滤
 
 [actions]
 allow_open       = ["http", "https"]

@@ -25,7 +25,8 @@ import (
 // State is the subset of the store needed by the subscriber.
 type State interface {
 	Since(topics []string) int64
-	MarkSeen(topic string, ts int64)
+	LastID(topic string) string
+	MarkSeen(topic string, ts int64, id string)
 }
 
 // Status describes the connection state for the tray and logs.
@@ -62,9 +63,14 @@ type Options struct {
 	Logger    *slog.Logger
 	OnMessage func(model.Message)
 	OnStatus  func(Status, error)
+	// OnStale is called for replayed messages that are older than MaxAge.
+	OnStale func(model.Message, time.Duration)
 	// Watchdog disconnects a stream that has been silent for this long.
 	// Defaults to 90s.
 	Watchdog time.Duration
+	// MaxAge drops messages older than this, which happens when a reconnect
+	// replays the server cache. Zero disables the check.
+	MaxAge time.Duration
 }
 
 type Subscriber struct {
@@ -229,8 +235,8 @@ func (s *Subscriber) streamOnce(ctx context.Context) (bool, error) {
 			if m.Priority <= 0 {
 				m.Priority = 3
 			}
-			if m.Topic != "" && m.Time > 0 {
-				s.opts.State.MarkSeen(m.Topic, m.Time)
+			if !s.observe(&m) {
+				continue
 			}
 			s.opts.OnMessage(m)
 		case model.EventKeepalive:
@@ -338,12 +344,38 @@ func (s *Subscriber) pollOnce(ctx context.Context, since string) (start int64, e
 		if m.Priority <= 0 {
 			m.Priority = 3
 		}
-		if m.Topic != "" && m.Time > 0 {
-			s.opts.State.MarkSeen(m.Topic, m.Time)
+		if !s.observe(&m) {
+			continue
 		}
 		s.opts.OnMessage(m)
 	}
 	return start, scanner.Err()
+}
+
+// observe advances the replay cursor and reports whether the message is worth
+// notifying. The cursor is advanced before the age check so that a stale
+// message is not replayed again on the next reconnect.
+func (s *Subscriber) observe(m *model.Message) bool {
+	now := time.Now()
+	if m.Time > now.Unix() {
+		// Clamp timestamps from a server whose clock is ahead; otherwise the
+		// cursor would jump into the future and skip real messages.
+		m.Time = now.Unix()
+	}
+	if m.Topic != "" && m.Time > 0 {
+		s.opts.State.MarkSeen(m.Topic, m.Time, m.ID)
+	}
+	if s.opts.MaxAge <= 0 || m.Time <= 0 {
+		return true
+	}
+	age := now.Sub(time.Unix(m.Time, 0))
+	if age <= s.opts.MaxAge {
+		return true
+	}
+	if s.opts.OnStale != nil {
+		s.opts.OnStale(*m, age)
+	}
+	return false
 }
 
 func (s *Subscriber) buildURL(since string, poll bool) string {
@@ -371,6 +403,9 @@ func (s *Subscriber) sinceString(poll bool) string {
 		ts = s.opts.State.Since(s.opts.Topics)
 	}
 	if ts > 0 {
+		if now := time.Now().Unix(); ts > now {
+			ts = now
+		}
 		return strconv.FormatInt(ts, 10)
 	}
 	if v := strings.TrimSpace(s.opts.Server.InitialSince); v != "" {
@@ -398,8 +433,9 @@ func (s *Subscriber) status(st Status, err error) {
 
 type noopState struct{}
 
-func (noopState) Since([]string) int64   { return 0 }
-func (noopState) MarkSeen(string, int64) {}
+func (noopState) Since([]string) int64           { return 0 }
+func (noopState) LastID(string) string           { return "" }
+func (noopState) MarkSeen(string, int64, string) {}
 
 // HTTPError is returned for non-200 responses.
 type HTTPError struct {

@@ -51,6 +51,8 @@ WSL 里可以直接运行 `/mnt/c/.../ntfy-notifier.exe` 验证 Windows Toast。
 
 - 脚本热重载；`config.toml` 修改后需要重启程序。
 - 首次启动不回放历史；之后按 `lastSeen` 续传。
+- 断线补发只通知 `max_message_age`（默认 `5m`）以内的消息；更早的只推进游标、不弹 Toast。设为 `0` 关闭该过滤。
+- 重启后不会重复上一条通知：最后一条消息的 id 记在 `state.json`，启动时预热去重表。
 - `max_per_min` 在 `[[topic]]` 下可覆盖全局；设为 `0` 表示不限流（验证码 topic 建议如此）。
 - 脚本返回 `nil` 表示吞掉通知；返回 table 即通知描述，字段见 `docs/PLAN_Init.md` §8.4。
 - 点击动作的 payload 落在 `%LOCALAPPDATA%\ntfy-notifier\pending`，TTL 默认 10 分钟。

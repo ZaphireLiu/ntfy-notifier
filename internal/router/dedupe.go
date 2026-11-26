@@ -40,6 +40,23 @@ func (d *Deduper) Seen(key string) bool {
 	if at, ok := d.entries[key]; ok && now.Sub(at) < d.ttl {
 		return true
 	}
+	d.record(key, now)
+	return false
+}
+
+// Seed marks a key as already seen without reporting a hit. It is used at
+// startup to suppress the replay of the last message processed before a
+// restart.
+func (d *Deduper) Seed(key string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.entries[key]; ok {
+		return
+	}
+	d.record(key, time.Now())
+}
+
+func (d *Deduper) record(key string, now time.Time) {
 	d.entries[key] = now
 	d.order = append(d.order, dedupeEntry{key: key, at: now})
 
@@ -50,5 +67,4 @@ func (d *Deduper) Seen(key string) bool {
 			delete(d.entries, old.key)
 		}
 	}
-	return false
 }

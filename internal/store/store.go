@@ -13,6 +13,7 @@ import (
 type State struct {
 	V        int                       `json:"v"`
 	LastSeen map[string]int64          `json:"lastSeen"`
+	LastID   map[string]string         `json:"lastId,omitempty"`
 	KV       map[string]map[string]any `json:"kv"`
 }
 
@@ -35,6 +36,7 @@ func Open(path string) (*Store, error) {
 		state: State{
 			V:        1,
 			LastSeen: map[string]int64{},
+			LastID:   map[string]string{},
 			KV:       map[string]map[string]any{},
 		},
 	}
@@ -43,15 +45,19 @@ func Open(path string) (*Store, error) {
 		if os.IsNotExist(err) {
 			return s, nil
 		}
-		return nil, err
+		// Return the empty store too, so callers can keep running.
+		return s, err
 	}
 	if err := json.Unmarshal(data, &s.state); err != nil {
 		_ = os.Rename(path, path+".bak")
-		s.state = State{V: 1, LastSeen: map[string]int64{}, KV: map[string]map[string]any{}}
+		s.state = State{V: 1, LastSeen: map[string]int64{}, LastID: map[string]string{}, KV: map[string]map[string]any{}}
 		return s, fmt.Errorf("state file corrupt, moved to %s.bak: %w", path, err)
 	}
 	if s.state.LastSeen == nil {
 		s.state.LastSeen = map[string]int64{}
+	}
+	if s.state.LastID == nil {
+		s.state.LastID = map[string]string{}
 	}
 	if s.state.KV == nil {
 		s.state.KV = map[string]map[string]any{}
@@ -67,14 +73,27 @@ func (s *Store) LastSeen(topic string) int64 {
 	return s.state.LastSeen[topic]
 }
 
-// MarkSeen advances the timestamp for a topic (never moves backwards).
-func (s *Store) MarkSeen(topic string, ts int64) {
+// MarkSeen advances the timestamp for a topic (never moves backwards) and
+// records the id of the last processed message. The id is used to suppress the
+// replay of that message after a restart.
+func (s *Store) MarkSeen(topic string, ts int64, id string) {
 	s.mu.Lock()
 	if ts > s.state.LastSeen[topic] {
 		s.state.LastSeen[topic] = ts
 		s.markDirtyLocked()
 	}
+	if id != "" && s.state.LastID[topic] != id {
+		s.state.LastID[topic] = id
+		s.markDirtyLocked()
+	}
 	s.mu.Unlock()
+}
+
+// LastID returns the id of the last message processed for a topic.
+func (s *Store) LastID(topic string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state.LastID[topic]
 }
 
 // Since returns the reconnect timestamp for a group of topics: the smallest
@@ -82,9 +101,14 @@ func (s *Store) MarkSeen(topic string, ts int64) {
 func (s *Store) Since(topics []string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now().Unix()
 	var min int64
 	for _, t := range topics {
 		ts := s.state.LastSeen[t]
+		if ts > now {
+			// A server clock that is ahead must not poison the cursor.
+			ts = now
+		}
 		if ts <= 0 {
 			continue
 		}

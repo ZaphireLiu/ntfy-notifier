@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -15,8 +16,9 @@ import (
 )
 
 type fakeState struct {
-	mu   sync.Mutex
-	seen map[string]int64
+	mu     sync.Mutex
+	seen   map[string]int64
+	lastID map[string]string
 }
 
 func (f *fakeState) Since(topics []string) int64 {
@@ -34,11 +36,23 @@ func (f *fakeState) Since(topics []string) int64 {
 	return min
 }
 
-func (f *fakeState) MarkSeen(topic string, ts int64) {
+func (f *fakeState) LastID(topic string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastID[topic]
+}
+
+func (f *fakeState) MarkSeen(topic string, ts int64, id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if ts > f.seen[topic] {
 		f.seen[topic] = ts
+	}
+	if id != "" {
+		if f.lastID == nil {
+			f.lastID = map[string]string{}
+		}
+		f.lastID[topic] = id
 	}
 }
 
@@ -103,6 +117,114 @@ func TestStreamReceivesMessages(t *testing.T) {
 	}
 	if state.seen["sms"] != 101 {
 		t.Fatalf("lastSeen = %d", state.seen["sms"])
+	}
+}
+
+func TestStaleMessageDroppedButCursorAdvanced(t *testing.T) {
+	oldTime := time.Now().Add(-10 * time.Minute).Unix()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"id":"old1","time":%d,"event":"message","topic":"sms","message":"stale"}`+"\n", oldTime)
+	}))
+	defer srv.Close()
+
+	state := &fakeState{seen: map[string]int64{}}
+	msgs := make(chan model.Message, 1)
+	stale := make(chan time.Duration, 1)
+	sub, err := New(Options{
+		Server:    config.Server{BaseURL: srv.URL, Mode: "stream"},
+		Topics:    []string{"sms"},
+		State:     state,
+		Logger:    logx.Nop(),
+		OnMessage: func(m model.Message) { msgs <- m },
+		OnStale:   func(_ model.Message, age time.Duration) { stale <- age },
+		MaxAge:    5 * time.Minute,
+		Watchdog:  2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		sub.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case m := <-msgs:
+		t.Fatalf("stale message delivered: %+v", m)
+	case age := <-stale:
+		if age < 9*time.Minute {
+			t.Fatalf("age = %v", age)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stale callback")
+	}
+
+	state.mu.Lock()
+	seen, id := state.seen["sms"], state.lastID["sms"]
+	state.mu.Unlock()
+	if seen != oldTime {
+		t.Fatalf("lastSeen = %d, want %d (cursor must advance)", seen, oldTime)
+	}
+	if id != "old1" {
+		t.Fatalf("lastID = %q", id)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("subscriber did not stop")
+	}
+}
+
+func TestFutureTimestampClampedAndDelivered(t *testing.T) {
+	future := time.Now().Add(time.Hour).Unix()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"id":"f1","time":%d,"event":"message","topic":"sms","message":"hi"}`+"\n", future)
+	}))
+	defer srv.Close()
+
+	state := &fakeState{seen: map[string]int64{}}
+	msgs := make(chan model.Message, 1)
+	sub, err := New(Options{
+		Server:    config.Server{BaseURL: srv.URL, Mode: "stream"},
+		Topics:    []string{"sms"},
+		State:     state,
+		Logger:    logx.Nop(),
+		OnMessage: func(m model.Message) { msgs <- m },
+		MaxAge:    5 * time.Minute,
+		Watchdog:  2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go sub.Run(ctx)
+	defer cancel()
+
+	select {
+	case m := <-msgs:
+		if m.Time > time.Now().Unix() {
+			t.Fatalf("timestamp not clamped: %d", m.Time)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for message")
+	}
+}
+
+func TestSinceStringClampsFutureCursor(t *testing.T) {
+	state := &fakeState{seen: map[string]int64{"sms": time.Now().Add(time.Hour).Unix()}}
+	sub := &Subscriber{opts: Options{Topics: []string{"sms"}, State: state}}
+	got, err := strconv.ParseInt(sub.sinceString(false), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if now := time.Now().Unix(); got > now {
+		t.Fatalf("since = %d, want <= %d", got, now)
 	}
 }
 

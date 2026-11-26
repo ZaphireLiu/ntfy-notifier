@@ -70,6 +70,7 @@ type Stats struct {
 	Dropped    atomic.Int64
 	Paused     atomic.Int64
 	Quiet      atomic.Int64
+	Stale      atomic.Int64
 	Errors     atomic.Int64
 }
 
@@ -156,7 +157,18 @@ func (a *App) Start(parent context.Context) error {
 	for _, t := range a.cfg.EnabledTopics() {
 		topics = append(topics, t.Name)
 	}
-	a.router = router.New(a.ctx, topics, a.process, router.NewDeduper(1000, 10*time.Minute), 100)
+	dedupe := router.NewDeduper(1000, 10*time.Minute)
+	if a.store != nil {
+		// A restart replays the last cached message because the cursor only
+		// moves back a few seconds. Remember that message so the replay is
+		// discarded instead of producing a duplicate toast.
+		for _, t := range topics {
+			if id := a.store.LastID(t); id != "" {
+				dedupe.Seed(t + "/" + id)
+			}
+		}
+	}
+	a.router = router.New(a.ctx, topics, a.process, dedupe, 100)
 	a.router.Start()
 
 	if a.scriptDir != "" {
@@ -172,6 +184,12 @@ func (a *App) Start(parent context.Context) error {
 		Logger:    a.log,
 		OnMessage: a.router.Dispatch,
 		OnStatus:  a.onStatus,
+		MaxAge:    a.cfg.Notify.MaxMessageAge.Std(),
+		OnStale: func(m model.Message, age time.Duration) {
+			a.stats.Stale.Add(1)
+			a.log.Debug("stale message dropped",
+				"topic", m.Topic, "id", m.ID, "age", age.Truncate(time.Second))
+		},
 	})
 	if err != nil {
 		a.router.Close()
@@ -498,8 +516,9 @@ func (a *App) StatusDetail() string {
 	if serr != nil {
 		fmt.Fprintf(&b, " (%v)", serr)
 	}
-	fmt.Fprintf(&b, "\n收到 %d / 通知 %d / 抑制 %d / 丢弃 %d",
-		a.stats.Received.Load(), a.stats.Notified.Load(), a.stats.Suppressed.Load(), a.stats.Dropped.Load())
+	fmt.Fprintf(&b, "\n收到 %d / 通知 %d / 抑制 %d / 丢弃 %d / 过期 %d",
+		a.stats.Received.Load(), a.stats.Notified.Load(), a.stats.Suppressed.Load(),
+		a.stats.Dropped.Load(), a.stats.Stale.Load())
 
 	keys := make([]string, 0, len(last))
 	for k := range last {

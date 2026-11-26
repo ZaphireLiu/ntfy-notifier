@@ -39,6 +39,9 @@ name = "sms"
 	if cfg.Notify.MaxPerMin != 10 || cfg.Notify.LongBodyLimit != 300 {
 		t.Fatalf("defaults not applied: %+v", cfg.Notify)
 	}
+	if cfg.Notify.MaxMessageAge.Std() != 5*time.Minute {
+		t.Fatalf("max_message_age default: %v", cfg.Notify.MaxMessageAge.Std())
+	}
 	if cfg.Scripts.Timeout.Std() != 200*time.Millisecond {
 		t.Fatalf("timeout default: %v", cfg.Scripts.Timeout.Std())
 	}
@@ -122,6 +125,44 @@ func TestQuietHours(t *testing.T) {
 	}
 	if _, err := ParseQuietHours("08:00-08:00"); err == nil {
 		t.Fatal("expected identical range error")
+	}
+}
+
+func TestMaxMessageAge(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+base_url = "https://ntfy.example.com"
+token = "x"
+
+[notify]
+max_message_age = "90s"
+
+[[topic]]
+name = "sms"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Notify.MaxMessageAge.Std(); got != 90*time.Second {
+		t.Fatalf("max_message_age = %v", got)
+	}
+}
+
+func TestNegativeMaxMessageAgeRejected(t *testing.T) {
+	path := writeConfig(t, `
+[server]
+base_url = "https://ntfy.example.com"
+token = "x"
+
+[notify]
+max_message_age = "-1s"
+
+[[topic]]
+name = "sms"
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected negative max_message_age error")
 	}
 }
 

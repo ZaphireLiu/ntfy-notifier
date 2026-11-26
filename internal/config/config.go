@@ -62,10 +62,11 @@ type Server struct {
 }
 
 type Notify struct {
-	MaxPerMin     int    `toml:"max_per_min"`
-	QuietHours    string `toml:"quiet_hours"`
-	QuietAction   string `toml:"quiet_action"` // silent | drop
-	LongBodyLimit int    `toml:"long_body_limit"`
+	MaxPerMin     int      `toml:"max_per_min"`
+	QuietHours    string   `toml:"quiet_hours"`
+	QuietAction   string   `toml:"quiet_action"` // silent | drop
+	LongBodyLimit int      `toml:"long_body_limit"`
+	MaxMessageAge Duration `toml:"max_message_age"` // 0 disables the check
 }
 
 type Actions struct {
@@ -124,6 +125,7 @@ func Default() *Config {
 			MaxPerMin:     10,
 			QuietAction:   "silent",
 			LongBodyLimit: 300,
+			MaxMessageAge: Duration(5 * time.Minute),
 		},
 		Actions: Actions{
 			AllowOpen:  []string{"http", "https"},
@@ -210,6 +212,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Notify.LongBodyLimit < 0 {
 		errs = append(errs, errors.New("notify.long_body_limit must be >= 0"))
+	}
+	if c.Notify.MaxMessageAge < 0 {
+		errs = append(errs, errors.New("notify.max_message_age must be >= 0"))
 	}
 	if c.Notify.QuietAction != "silent" && c.Notify.QuietAction != "drop" {
 		errs = append(errs, fmt.Errorf("notify.quiet_action must be silent or drop, got %q", c.Notify.QuietAction))
