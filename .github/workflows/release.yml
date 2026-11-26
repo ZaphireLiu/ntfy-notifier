@@ -1,0 +1,63 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build Windows bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          stage="build/ntfy-notifier-${version}"
+          mkdir -p "$stage/scripts" "$stage/assets"
+
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -H=windowsgui -X main.version=${version}" \
+            -o "$stage/ntfy-notifier.exe" ./cmd/ntfy-notifier
+
+          cp config.example.toml README.md "$stage/"
+          cp scripts/sms.lua "$stage/scripts/"
+          cp assets/icon.png assets/icon.ico "$stage/assets/"
+
+          cd build
+          zip -9 -r "ntfy-notifier-${version}-windows-amd64.zip" "ntfy-notifier-${version}"
+          sha256sum "ntfy-notifier-${version}-windows-amd64.zip" > SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          notes="docs/RELEASE_NOTES_${version}.md"
+          args=(--title "$version")
+          if [ -f "$notes" ]; then
+            args+=(--notes-file "$notes")
+          else
+            args+=(--generate-notes)
+          fi
+          gh release create "$version" \
+            "build/ntfy-notifier-${version}-windows-amd64.zip" \
+            build/SHA256SUMS \
+            "${args[@]}"
