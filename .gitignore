@@ -1,0 +1,5 @@
+dist/
+*.exe
+state.json
+state.json.bak
+/ntfy-notifier

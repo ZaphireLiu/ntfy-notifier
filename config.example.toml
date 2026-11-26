@@ -1,0 +1,43 @@
+# ntfy-notifier 示例配置
+# 放到 exe 同目录，改名为 config.toml
+
+[app]
+name      = "ntfy Notifier"
+app_id    = "com.example.ntfynotifier"  # 改成你自己的唯一 ID，会显示在通知设置里
+scheme    = "ntfy-notifier"
+autostart = true
+# icon    = "assets/icon.png"
+
+[server]
+base_url = "https://ntfy.example.com"
+token    = "tk_xxxxxxxxxxxxxxxx"
+# username = ""
+# password = ""
+# tls_ca   = "ca.pem"
+# mode     = "stream"          # stream | poll
+# proxy    = "none"
+# initial_since = ""           # 首次启动不回放历史
+
+[notify]
+max_per_min     = 10
+quiet_hours     = ""           # 例如 "23:30-08:00"
+quiet_action    = "silent"     # silent | drop
+long_body_limit = 300
+
+[actions]
+allow_open       = ["http", "https"]
+allow_http       = true
+http_allow_hosts = ["127.0.0.1"]
+allow_run        = false
+pending_ttl      = "10m"
+
+[scripts]
+dir     = "scripts"
+timeout = "200ms"
+
+[[topic]]
+name        = "sms"
+max_per_min = 0                # 验证码不能丢，关掉限流
+
+[[topic]]
+name = "agent"
